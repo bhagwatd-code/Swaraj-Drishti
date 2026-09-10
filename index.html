@@ -223,7 +223,7 @@ hr.sep{border:none; border-top:1px solid var(--border); margin:18px 0;}
       <div class="navitem active" data-view="dashboard"><span class="ico">▦</span> Dashboard</div>
       <div class="navitem" data-view="upload"><span class="ico">⇪</span> Upload &amp; Analyse RFP</div>
       <div class="navitem" data-view="results"><span class="ico">▤</span> Analysis Report <span class="badge" id="navResultsBadge">—</span></div>
-      <div class="navitem" data-view="annexures"><span class="ico">▥</span> Annexure Generator</div>
+      <div class="navitem" data-view="annexures"><span class="ico">▥</span> ESDS Certificate Templates</div>
     </div>
 
     <div class="navgroup">
@@ -334,7 +334,7 @@ hr.sep{border:none; border-top:1px solid var(--border); margin:18px 0;}
         </div>
 
         <div class="note-box amber" style="margin-top:20px;">
-          <b>How this works —</b> Drishti scans the document for known tender patterns (turnover thresholds, manpower, certifications, GPU/storage/network figures, RPO/RTO, SLA %, document checklist language etc.) and cross-checks each one against your ESDS Capability Library. It is a fast first pass, not a legal reading of the tender — always verify critical clauses (dates, EMD, evaluation weightage) against the source PDF before submission.
+          <b>How this works —</b> Drishti (1) pulls out any Annexure / Appendix / Schedule / Proforma / BOQ formats the RFP itself contains, so you can download the blank ones straight into Word instead of retyping them, and (2) scans the rest of the text for known tender patterns (turnover, manpower, certifications, GPU/storage/network figures, RPO/RTO, SLA % etc.) and cross-checks each against your ESDS Capability Library. It is a fast first pass, not a legal reading of the tender — always verify critical clauses (dates, EMD, evaluation weightage) and complex tables against the source PDF before submission.
         </div>
 
         <div class="card" style="margin-top:20px;">
@@ -398,13 +398,25 @@ hr.sep{border:none; border-top:1px solid var(--border); margin:18px 0;}
           </div>
 
           <div class="tabs">
-            <div class="tab active" data-tab="req">Requirement-by-requirement</div>
+            <div class="tab active" data-tab="annex">Annexures found in this RFP</div>
+            <div class="tab" data-tab="req">Requirement-by-requirement</div>
             <div class="tab" data-tab="docs">Document checklist</div>
             <div class="tab" data-tab="risks">Challenges &amp; risks</div>
             <div class="tab" data-tab="ai">AI deep-dive (optional)</div>
           </div>
 
-          <div class="tabpanel active" id="tab-req">
+          <div class="tabpanel active" id="tab-annex">
+            <div class="note-box" id="annexFoundNote" style="display:none;"></div>
+            <div class="card" id="annexFoundCard">
+              <div class="card-head">
+                <div><h3>Annexures, schedules &amp; BOQ formats detected</h3><div class="desc">Extracted straight from the uploaded document — download the blank format to fill in and submit, no retyping.</div></div>
+                <button class="pill-btn secondary" id="btnDownloadAllAnnexures" style="display:none;">⇩ Download all as one Word file</button>
+              </div>
+              <div class="card-body" id="annexFoundBody"></div>
+            </div>
+          </div>
+
+          <div class="tabpanel" id="tab-req">
             <div class="card">
               <div class="table-wrap">
                 <table>
@@ -417,7 +429,7 @@ hr.sep{border:none; border-top:1px solid var(--border); margin:18px 0;}
 
           <div class="tabpanel" id="tab-docs">
             <div class="card">
-              <div class="card-head"><div><h3>Supporting documents the RFP appears to demand</h3><div class="desc">Mapped against templates already in your Annexure Generator</div></div></div>
+              <div class="card-head"><div><h3>Supporting documents the RFP appears to demand</h3><div class="desc">Cross-checked against the RFP's own annexures (previous tab) and ESDS's certificate templates</div></div></div>
               <div class="table-wrap">
                 <table>
                   <thead><tr><th>Document</th><th>Where it was mentioned</th><th>ESDS can supply</th><th></th></tr></thead>
@@ -463,8 +475,8 @@ hr.sep{border:none; border-top:1px solid var(--border); margin:18px 0;}
 
       <!-- ================= ANNEXURES ================= -->
       <div class="view" id="view-annexures">
-        <h2 class="view-title">Annexure Generator</h2>
-        <p class="view-desc">Fill in tender-specific details and download an ESDS self-certification / undertaking as a ready-to-sign Word document.</p>
+        <h2 class="view-title">ESDS Certificate Templates</h2>
+        <p class="view-desc">These are ESDS-authored letters (turnover, manpower, GPU/compute self-certifications etc.) — use them when the RFP asks for a self-declaration but doesn't supply its own format. If the RFP already provides a blank annexure/BOQ format, get that instead from Analysis Report → "Annexures found in this RFP" — no retyping needed.</p>
 
         <div class="grid" style="grid-template-columns:280px 1fr; gap:20px; align-items:start;">
           <div class="card">
@@ -977,7 +989,7 @@ let currentAnalysis = null;
 /* ================= NAVIGATION ================= */
 const viewTitles = {
   dashboard:"Dashboard", upload:"Upload & Analyse RFP", results:"Analysis Report",
-  annexures:"Annexure Generator", library:"Capability Library", history:"Past Analyses", settings:"Settings & Data"
+  annexures:"ESDS Certificate Templates", library:"Capability Library", history:"Past Analyses", settings:"Settings & Data"
 };
 function go(view){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
@@ -1021,19 +1033,42 @@ document.querySelectorAll('.tabs .tab[data-libtab]').forEach(tab=>{
 /* ================= FILE EXTRACTION ================= */
 if(window.pdfjsLib){ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }
 
+/* Line-aware PDF extraction: groups text items by y-position so table/column layout
+   (BOQs, annexure grids) survives reasonably well as plain text, and tags each page
+   with a [[PAGE n]] marker so detected annexures can report "found on page N". */
 async function extractPdfText(arrayBuffer, onProgress){
   const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
   let text = '';
   for(let i=1;i<=pdf.numPages;i++){
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-    text += content.items.map(it=>it.str).join(' ') + '\n';
+    const lines = [];
+    content.items.forEach(item=>{
+      const y = Math.round(item.transform[5]);
+      let line = lines.find(l=>Math.abs(l.y-y)<=2);
+      if(!line){ line = {y, items:[]}; lines.push(line); }
+      line.items.push(item);
+    });
+    lines.sort((a,b)=>b.y-a.y);
+    const pageText = lines.map(l=>{
+      l.items.sort((a,b)=>a.transform[4]-b.transform[4]);
+      let lineStr=''; let lastEndX=null;
+      l.items.forEach(it=>{
+        const x = it.transform[4];
+        if(lastEndX!==null && (x-lastEndX)>16){ lineStr += '    '; }
+        else if(lastEndX!==null && (x-lastEndX)>2){ lineStr += ' '; }
+        lineStr += it.str;
+        lastEndX = x + (it.width||0);
+      });
+      return lineStr;
+    }).join('\n');
+    text += `\n[[PAGE ${i}]]\n` + pageText + '\n';
     if(onProgress) onProgress(i/pdf.numPages);
   }
   return text;
 }
-async function extractDocxText(arrayBuffer){
-  const result = await mammoth.extractRawText({arrayBuffer});
+async function extractDocxHtml(arrayBuffer){
+  const result = await mammoth.convertToHtml({arrayBuffer}, { includeDefaultStyleMap:true });
   return result.value;
 }
 function readFileAsText(file){
@@ -1041,6 +1076,92 @@ function readFileAsText(file){
 }
 function readFileAsArrayBuffer(file){
   return new Promise((res,rej)=>{ const r = new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsArrayBuffer(file); });
+}
+function escapeHtml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function cap(s){ return s.charAt(0).toUpperCase()+s.slice(1).toLowerCase(); }
+
+/* Splits a DOCX's converted HTML into an ordered list of top-level blocks (paragraphs,
+   tables, lists…) and a matching plain-text concatenation so heading matches found in the
+   plain text can be mapped back to real HTML blocks — this is what lets a downloaded
+   annexure keep its original table formatting instead of collapsing into flat text. */
+function buildBlockIndexFromHtml(html){
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const blocks = Array.from(doc.body.children);
+  let concat = ''; const offsets = [];
+  blocks.forEach(b=>{
+    offsets.push({start:concat.length, block:b});
+    concat += (b.innerText || b.textContent || '') + '\n';
+  });
+  return {concat, offsets};
+}
+function blockIndexForCharIndex(offsets, idx){
+  for(let i=offsets.length-1;i>=0;i--){ if(offsets[i].start<=idx) return i; }
+  return 0;
+}
+
+/* ---- Annexure / Schedule / Appendix / BOQ / Proforma heading detection ---- */
+function detectAnnexureHeadings(text){
+  const candidates = [];
+  let m;
+  const reNumbered = /\b(Annexure|Appendix|Schedule|Proforma|Form)\s*[-–—:\.]?\s*([IVXLC]{1,6}|[A-Z]{1,2}|\d{1,3})\b\s*[:\-–—\.]?\s*([^\n\[]{0,90})/g;
+  while((m = reNumbered.exec(text))){
+    const title = (m[3]||'').replace(/[:\-–—\.\s]+$/,'').trim();
+    candidates.push({
+      key: (m[1]+' '+m[2]).toLowerCase().replace(/\s+/g,' '),
+      label: `${cap(m[1])} ${m[2]}${title ? ' — '+title : ''}`,
+      index: m.index
+    });
+  }
+  const specials = [
+    {re:/BILL\s+OF\s+QUANTIT(?:Y|IES)[^\n\[]{0,70}/gi, label:'Bill of Quantities (BOQ)'},
+    {re:/\bBOQ\b[^\n\[]{0,70}/g, label:'BOQ'},
+    {re:/PRICE\s+BID\s+FORMAT[^\n\[]{0,70}/gi, label:'Price Bid Format'},
+    {re:/FINANCIAL\s+BID\s+FORMAT[^\n\[]{0,70}/gi, label:'Financial Bid Format'},
+    {re:/TECHNICAL\s+BID\s+FORMAT[^\n\[]{0,70}/gi, label:'Technical Bid Format'},
+    {re:/COMPLIANCE\s+(?:SHEET|STATEMENT)[^\n\[]{0,70}/gi, label:'Compliance Sheet'},
+    {re:/CHECKLIST\s+OF\s+DOCUMENTS?[^\n\[]{0,70}/gi, label:'Checklist of Documents'},
+    {re:/BID\s+SECURING\s+DECLARATION[^\n\[]{0,70}/gi, label:'Bid Securing Declaration'},
+    {re:/MANUFACTURER'?S?\s+AUTHORI[SZ]ATION\s+FORM[^\n\[]{0,70}/gi, label:'Manufacturer Authorisation Form (MAF)'},
+    {re:/LETTER\s+OF\s+AUTHORI[SZ]ATION[^\n\[]{0,70}/gi, label:'Letter of Authorisation'},
+    {re:/SELF[- ]CERTIFICAT(?:E|ION)[^\n\[]{0,70}/gi, label:'Self-Certification Format'}
+  ];
+  specials.forEach(s=>{
+    let mm; s.re.lastIndex = 0;
+    while((mm = s.re.exec(text))){ candidates.push({ key:s.label.toLowerCase(), label:s.label, index:mm.index }); }
+  });
+
+  // A heading usually appears once in a table of contents and again at the real section —
+  // assume the LAST occurrence of a given label is the actual section start.
+  const byKey = {};
+  candidates.forEach(c=>{ if(!byKey[c.key] || c.index>byKey[c.key].index) byKey[c.key]=c; });
+  return Object.values(byKey).sort((a,b)=>a.index-b.index);
+}
+
+function sliceAnnexuresFromPlainText(text, headings){
+  return headings.map((h,i)=>{
+    const end = i+1<headings.length ? headings[i+1].index : text.length;
+    let content = text.substring(h.index, end);
+    const pageMatches = [...text.substring(0,h.index).matchAll(/\[\[PAGE (\d+)\]\]/g)];
+    const page = pageMatches.length ? pageMatches[pageMatches.length-1][1] : null;
+    content = content.replace(/\[\[PAGE \d+\]\]/g,'').trim();
+    return { label:h.label, page, content, length:content.length, kind:'text' };
+  }).filter(a=>a.length>80);
+}
+
+function sliceAnnexuresFromHtmlBlocks(offsets, headings, textLen){
+  const blocks = offsets.map(o=>o.block);
+  return headings.map((h,i)=>{
+    const startBlock = blockIndexForCharIndex(offsets, h.index);
+    const endCharIdx = i+1<headings.length ? headings[i+1].index : textLen;
+    let endBlock = blockIndexForCharIndex(offsets, endCharIdx);
+    if(endBlock<=startBlock) endBlock = startBlock+1;
+    const chosen = blocks.slice(startBlock, endBlock);
+    const htmlContent = chosen.map(b=>b.outerHTML).join('\n');
+    const textContent = chosen.map(b=>b.innerText||b.textContent||'').join('\n').trim();
+    return { label:h.label, page:null, content:textContent, htmlContent, length:textContent.length, kind:'html' };
+  }).filter(a=>a.length>80);
 }
 
 const dropzone = document.getElementById('dropzone');
@@ -1054,7 +1175,9 @@ fileInput.addEventListener('change', e=>{ const f = e.target.files[0]; if(f) han
 document.getElementById('btnAnalysePasted').addEventListener('click', ()=>{
   const txt = document.getElementById('pasteText').value.trim();
   if(!txt){ alert('Paste some RFP text first.'); return; }
-  runAnalysis(txt, 'Pasted text');
+  const headings = detectAnnexureHeadings(txt);
+  const annexures = sliceAnnexuresFromPlainText(txt, headings);
+  runAnalysis(txt, 'Pasted text', annexures);
 });
 
 async function handleFile(file){
@@ -1067,21 +1190,36 @@ async function handleFile(file){
 
   try{
     let text = '';
+    let annexures = [];
     const ext = file.name.split('.').pop().toLowerCase();
     if(ext==='pdf'){
       const buf = await readFileAsArrayBuffer(file);
-      text = await extractPdfText(buf, p=>{ progBar.style.width = (10+p*80)+'%'; });
+      const raw = await extractPdfText(buf, p=>{ progBar.style.width = (10+p*70)+'%'; });
+      statusText.textContent = 'Locating annexures / BOQ formats…';
+      progBar.style.width='85%';
+      const headings = detectAnnexureHeadings(raw);
+      annexures = sliceAnnexuresFromPlainText(raw, headings);
+      text = raw.replace(/\[\[PAGE \d+\]\]/g,'');
     } else if(ext==='docx'){
-      progBar.style.width='40%';
+      progBar.style.width='30%';
       const buf = await readFileAsArrayBuffer(file);
-      text = await extractDocxText(buf);
+      const html = await extractDocxHtml(buf);
+      progBar.style.width='60%';
+      statusText.textContent = 'Locating annexures / BOQ formats…';
+      const {concat, offsets} = buildBlockIndexFromHtml(html);
+      const headings = detectAnnexureHeadings(concat);
+      annexures = sliceAnnexuresFromHtmlBlocks(offsets, headings, concat.length);
+      text = concat;
+      progBar.style.width='85%';
     } else {
       progBar.style.width='40%';
       text = await readFileAsText(file);
+      const headings = detectAnnexureHeadings(text);
+      annexures = sliceAnnexuresFromPlainText(text, headings);
     }
     progBar.style.width='100%';
-    statusText.textContent = 'Extracted '+text.length.toLocaleString()+' characters. Analysing…';
-    setTimeout(()=>{ runAnalysis(text, file.name); }, 300);
+    statusText.textContent = 'Extracted '+text.length.toLocaleString()+' characters, found '+annexures.length+' annexure section(s). Analysing…';
+    setTimeout(()=>{ runAnalysis(text, file.name, annexures); }, 300);
   }catch(err){
     console.error(err);
     statusText.textContent = 'Could not read this file. Try pasting the text instead.';
@@ -1404,12 +1542,13 @@ function statusPillHtml(status){
   return `<span class="status-pill ${cls}">${label}</span>`;
 }
 
-function runAnalysis(text, sourceName){
+function runAnalysis(text, sourceName, annexures){
   if(!text || text.trim().length < 30){ alert('Could not extract enough text from this document. Try pasting the text directly.'); return; }
   const result = analyzeRFP(text, KB);
   result.sourceName = sourceName;
   result.analysedAt = new Date().toISOString();
   result.rfpTextSample = text.slice(0, 20000);
+  result.annexures = annexures || [];
   currentAnalysis = result;
   renderResults(result);
 
@@ -1454,6 +1593,8 @@ function renderResults(r){
   ];
   document.getElementById('metaTable').querySelector('tbody').innerHTML = metaRows.map(([k,v])=>`<tr><td style="font-weight:600;width:45%;">${k}</td><td>${v}</td></tr>`).join('');
 
+  renderAnnexTab(r);
+
   // requirements table
   const reqBody = document.getElementById('reqTableBody');
   if(r.requirements.length===0){
@@ -1494,6 +1635,65 @@ function renderResults(r){
   document.getElementById('aiOutputWrap').style.display='none';
   document.getElementById('aiStatus').textContent='';
 }
+
+function renderAnnexTab(r){
+  const wrap = document.getElementById('annexFoundBody');
+  const note = document.getElementById('annexFoundNote');
+  const bulkBtn = document.getElementById('btnDownloadAllAnnexures');
+  const list = r.annexures || [];
+
+  if(list.length===0){
+    note.style.display='block';
+    note.innerHTML = `<b>No annexure/BOQ headings were confidently detected</b> in this document. That usually means either the RFP keeps its formats in a separate corrigendum/BoQ file (upload that one too), the headings use unusual wording, or the file is a scanned/image PDF with no selectable text. You can still use "AI deep-dive" or paste a specific section manually.`;
+    wrap.innerHTML = `<div class="empty-state"><div class="icon">▥</div>Nothing detected yet.</div>`;
+    bulkBtn.style.display='none';
+    return;
+  }
+
+  note.style.display='block';
+  note.innerHTML = `Found <b>${list.length}</b> annexure/schedule/BOQ section(s). Downloads are extracted as-is from the source file — ${list.some(a=>a.kind==='html') ? 'tables are preserved for Word-sourced sections; ' : ''}double-check formatting/complex tables against the original before circulating.`;
+  bulkBtn.style.display = list.length>1 ? 'inline-flex' : 'none';
+
+  wrap.innerHTML = list.map((a,i)=>`
+    <div class="lib-row" style="align-items:flex-start; flex-direction:column; gap:8px; padding:14px 0;">
+      <div style="display:flex; width:100%; justify-content:space-between; align-items:center; gap:10px;">
+        <div>
+          <div style="font-weight:700;">${escapeHtml(a.label)}</div>
+          <div class="small-muted">${a.page ? 'Found near page '+a.page+' · ' : ''}${a.length.toLocaleString()} characters extracted</div>
+        </div>
+        <div style="display:flex; gap:8px; flex:0 0 auto;">
+          <button class="pill-btn secondary" onclick="togglePreviewAnnex(${i})">Preview</button>
+          <button class="pill-btn" onclick="downloadDetectedAnnexure(${i})">⇩ Download (.doc)</button>
+        </div>
+      </div>
+      <div id="annexPreview${i}" style="display:none; width:100%; background:#FAFBFC; border:1px solid var(--border); border-radius:8px; padding:14px; max-height:260px; overflow:auto; white-space:pre-wrap; font-size:12.5px; font-family:Consolas,monospace;">${escapeHtml(a.content.slice(0,3000))}${a.content.length>3000?'\n\n…(truncated in preview — full text is included in the download)':''}</div>
+    </div>`).join('');
+}
+
+function togglePreviewAnnex(i){
+  const el = document.getElementById('annexPreview'+i);
+  el.style.display = el.style.display==='none' ? 'block' : 'none';
+}
+
+function annexureToExportHtml(a){
+  if(a.kind==='html'){
+    return `<h3 style="font-family:Calibri,Arial,sans-serif;">${escapeHtml(a.label)}</h3>` + a.htmlContent;
+  }
+  return `<h3 style="font-family:Calibri,Arial,sans-serif;">${escapeHtml(a.label)}</h3>
+    <pre style="white-space:pre-wrap; font-family:Consolas,'Courier New',monospace; font-size:10.5pt; line-height:1.4;">${escapeHtml(a.content)}</pre>`;
+}
+
+function downloadDetectedAnnexure(i){
+  const a = currentAnalysis.annexures[i];
+  downloadWordDoc(a.label, annexureToExportHtml(a));
+}
+
+function downloadAllDetectedAnnexures(){
+  const list = currentAnalysis.annexures || [];
+  const html = list.map(a=>annexureToExportHtml(a) + '<br clear="all" style="page-break-before:always">').join('\n');
+  downloadWordDoc((currentAnalysis.meta.tenderNo || currentAnalysis.sourceName || 'RFP')+'-Annexures', html);
+}
+document.getElementById('btnDownloadAllAnnexures').addEventListener('click', downloadAllDetectedAnnexures);
 
 function openAnnexureFromResults(id){
   go('annexures');
